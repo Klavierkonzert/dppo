@@ -18,6 +18,8 @@ from omegaconf import OmegaConf
 DEFAULT_VIDEO_DIR = "videos"
 DEFAULT_MAX_EPISODE_STEPS = 280
 
+from pathlib import Path
+
 
 def register_resolvers():
     import math
@@ -29,8 +31,38 @@ def register_resolvers():
         "now", lambda pattern: datetime.now().strftime(pattern), replace=True
     )
 
+def resolve_checkpoint_path(path: str, _EXT: str='.pt') -> str:
+    """Searches for `'.pt'` at the end of the file, and if NOT found - picks up the most recent `.pt` file. 
+    
+    :return: most recent model path, if the path points to a folder. Returns `path` without any changes otherwise."""
+    ppath = Path(path).expanduser()
+    if (ppath.is_file() and ppath.suffix==_EXT):
+        return path
+    else:
+        # Check if path exists and is a directory
+        if not ppath.is_dir():
+            raise NotADirectoryError(f"{path} is neither a '.pt` file nor a valid directory")
 
-def infer_env_name(path):
+        # Get subdirectories
+        subdirs = [d for d in ppath.iterdir() if d.is_dir()]
+        newest_subdir = ppath #default search dir
+        if subdirs:
+            # Pick most recently modified subdirectory
+            newest_subdir = max(subdirs, key=lambda d: d.stat().st_mtime)
+
+        #Search for files recursively
+        files = [f for f in newest_subdir.rglob(f"*{_EXT}") if f.is_file()]
+        if not files:
+            raise FileNotFoundError(f"No {_EXT} files found in {newest_subdir}")
+
+        # by modification time (newest first)
+        # Pick most recently modified file
+        newest_file = str(max(files, key=lambda f: f.stat().st_mtime))
+        print(f"[INFO]: resolved model path: {str(newest_file)}")
+        return newest_file
+
+
+def infer_env_name(path: str) ->str:
     match = re.search(r"(kitchen-(?:complete|partial|mixed)-v\d+)", path)
     if match:
         return match.group(1)
@@ -189,15 +221,16 @@ def main():
 
     register_resolvers()
 
-    env_name = args.env or infer_env_name(args.ckpt)
-    stage = infer_stage(args.ckpt) if args.stage == "auto" else args.stage
-    out_path = args.out or default_output_path(args.out_dir, stage, env_name, args.ckpt)
+    checkpoint_path = resolve_checkpoint_path(args.ckpt)
+    env_name = args.env or infer_env_name(checkpoint_path)
+    stage = infer_stage(checkpoint_path) if args.stage == "auto" else args.stage
+    out_path = args.out or default_output_path(args.out_dir, stage, env_name, checkpoint_path)
     print(f"[INFO] Env: {env_name}")
     print(f"[INFO] Stage: {stage}")
 
     cfg = load_config(args.config, env_name, args.device, stage)
     stats = load_normalizer(cfg.normalization_path)
-    model = build_model(cfg, args.ckpt, args.device, args.weights)
+    model = build_model(cfg, checkpoint_path, args.device, args.weights)
 
     env = gym.make(env_name)
     env.seed(args.seed)
