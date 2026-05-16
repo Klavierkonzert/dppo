@@ -169,6 +169,14 @@ def make_async(
                 kwargs["render"] = render
             env = make_(id, **kwargs)
 
+            # DEBUGGING:
+            print("DEBUG: OBS SPACE:", env.observation_space.shape)
+            obs = env.reset()
+            # gym vs gymnasium compatibility
+            if isinstance(obs, tuple):
+                obs = obs[0]
+            print("DEBUG: RESET OBS SHAPE:", obs.shape)
+
         # add wrappers
         if wrappers is not None:
             for wrapper, args in wrappers.items():
@@ -217,13 +225,19 @@ def make_async(
         }
         return MultiStep(env=env, n_obs_steps=wrappers.multi_step.n_obs_steps)
 
+    # The dummy env is only needed for robomimic/image envs, where creating the
+    # real env in the main process can initialize an OpenGL context before fork.
+    # Plain Gym/D4RL envs should use a real env for space inference; otherwise a
+    # hand-built dummy space can drift from the wrapped env's actual space.
+    is_use_dummy_env = ((robomimic_env_cfg_path is not None or use_image_obs)
+                            and (render or render_offscreen or use_image_obs)
+                        )
+
     env_fns = [_make_env for _ in range(num_envs)]
     return (
         AsyncVectorEnv(
             env_fns,
-            dummy_env_fn=(
-                dummy_env_fn if render or render_offscreen or use_image_obs else None
-            ),
+            dummy_env_fn=(dummy_env_fn if is_use_dummy_env else None),
             delay_init="avoiding" in id,  # add delay for D3IL initialization
         )
         if asynchronous

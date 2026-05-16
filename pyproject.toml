@@ -21,10 +21,10 @@ dependencies = [
     "matplotlib==3.7.5",
     "omegaconf==2.3.0",
     "pretty_errors==1.2.25",
-    "torch==2.4.0",
+    "torch>=2.4.0",
     "tqdm==4.66.5",
-    "wandb==0.17.7"
-]
+			    "wandb==0.17.7"
+	]
 
 [project.optional-dependencies]
 gym = [

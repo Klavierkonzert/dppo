@@ -44,6 +44,8 @@ def main(cfg: OmegaConf):
     # resolve immediately so all the ${now:} resolvers will use the same time.
     OmegaConf.resolve(cfg)
 
+    print("DEBUG: CFG OBS DIM:", cfg.obs_dim)
+
     # For pre-training: download dataset if needed
     if "train_dataset_path" in cfg and not os.path.exists(cfg.train_dataset_path):
         download_url = get_dataset_download_url(cfg)
@@ -84,6 +86,24 @@ def main(cfg: OmegaConf):
     # run agent
     cls = hydra.utils.get_class(cfg._target_)
     agent = cls(cfg)
+
+    #  load checkpoint
+    # only main process should load
+    if hasattr(agent, "model") and "checkpoint" in cfg:
+        import torch
+
+        ckpt_path = os.path.abspath(cfg.checkpoint)
+        print(f"Loading checkpoint from {ckpt_path}")
+
+        ckpt = torch.load(
+            ckpt_path,
+            map_location="cpu"   # IMPORTANT
+        )
+
+        agent.model.load_state_dict(ckpt["model"])
+
+        # THEN move model to GPU
+        agent.model.to(cfg.device)
     agent.run()
 
 
