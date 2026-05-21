@@ -142,7 +142,28 @@ def unnormalize_action(action, stats):
     return action * (stats["action_max"] - stats["action_min"]) + stats["action_min"]
 
 
+def override_camera(env, distance, azimuth, elevation, lookat):
+    renderer = getattr(getattr(env.unwrapped, "sim_robot", None), "renderer", None)
+    if renderer is None:
+        print("[WARN] env has no sim_robot.renderer; camera override skipped.")
+        return
+    settings = renderer._camera_settings or {}
+    settings["distance"] = distance
+    settings["azimuth"] = azimuth
+    settings["elevation"] = elevation
+    settings["lookat"] = list(lookat)
+    renderer._camera_settings = settings
+
+
 def render_frame(env, width, height, camera_name):
+    sim_robot = getattr(env.unwrapped, "sim_robot", None)
+    if sim_robot is not None and getattr(sim_robot, "renderer", None) is not None:
+        from d4rl.kitchen.adept_envs.simulation.renderer import RenderMode
+        frame = sim_robot.renderer.render_offscreen(
+            width, height, mode=RenderMode.RGB, camera_id=-1
+        )
+        return format_frame(frame)
+
     try:
         return format_frame(env.render(mode="rgb_array", width=width, height=height))
     except TypeError:
@@ -217,6 +238,16 @@ def main():
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--camera", type=str, default="fixed")
+    parser.add_argument("--cam-distance", type=float, default=2.2)
+    parser.add_argument("--cam-azimuth", type=float, default=70.0)
+    parser.add_argument("--cam-elevation", type=float, default=-35.0)
+    parser.add_argument(
+        "--cam-lookat",
+        type=float,
+        nargs=3,
+        default=[-0.2, 0.5, 2.0],
+        metavar=("X", "Y", "Z"),
+    )
     args = parser.parse_args()
 
     register_resolvers()
@@ -235,6 +266,13 @@ def main():
     env = gym.make(env_name)
     env.seed(args.seed)
     obs = env.reset()
+    override_camera(
+        env,
+        distance=2.2,
+        azimuth=70,
+        elevation=-35,
+        lookat=[-0.2, 0.5, 2.0],
+    )
 
     obs_history = deque(maxlen=cfg.cond_steps)
     norm_obs = normalize_obs(obs, stats).astype(np.float32)
