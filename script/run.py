@@ -17,6 +17,9 @@ from download_url import (
     get_normalization_download_url,
     get_checkpoint_download_url,
 )
+from d4rl.kitchen.kitchen_envs import KitchenMicrowaveKettleLightSliderV0
+KitchenMicrowaveKettleLightSliderV0.TASK_ELEMENTS = ['microwave', 'kettle', 'light switch', 'slide cabinet', 'bottom burner', 'top burner',]
+KitchenMicrowaveKettleLightSliderV0.TERMINATE_ON_TASK_COMPLETE = False
 
 # allows arbitrary python code execution in configs using the ${eval:''} resolver
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -43,6 +46,8 @@ sys.stderr = open(sys.stderr.fileno(), mode="w", buffering=1)
 def main(cfg: OmegaConf):
     # resolve immediately so all the ${now:} resolvers will use the same time.
     OmegaConf.resolve(cfg)
+
+    print("DEBUG: CFG OBS DIM:", cfg.obs_dim)
 
     # For pre-training: download dataset if needed
     if "train_dataset_path" in cfg and not os.path.exists(cfg.train_dataset_path):
@@ -84,6 +89,24 @@ def main(cfg: OmegaConf):
     # run agent
     cls = hydra.utils.get_class(cfg._target_)
     agent = cls(cfg)
+
+    #  load checkpoint
+    # only main process should load
+    if hasattr(agent, "model") and "checkpoint" in cfg:
+        import torch
+
+        ckpt_path = os.path.abspath(cfg.checkpoint)
+        print(f"Loading checkpoint from {ckpt_path}")
+
+        ckpt = torch.load(
+            ckpt_path,
+            map_location="cpu"   # IMPORTANT
+        )
+
+        agent.model.load_state_dict(ckpt["model"])
+
+        # THEN move model to GPU
+        agent.model.to(cfg.device)
     agent.run()
 
 
