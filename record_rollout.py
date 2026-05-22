@@ -248,6 +248,12 @@ def main():
         default=[-0.2, 0.5, 2.0],
         metavar=("X", "Y", "Z"),
     )
+    parser.add_argument(
+        "--no-early-stop",
+        action="store_true",
+        help="Record exactly --max-steps frames: disables d4rl's "
+        "TERMINATE_ON_TASK_COMPLETE and ignores `done` in the rollout loop.",
+    )
     args = parser.parse_args()
 
     register_resolvers()
@@ -262,6 +268,17 @@ def main():
     cfg = load_config(args.config, env_name, args.device, stage)
     stats = load_normalizer(cfg.normalization_path)
     model = build_model(cfg, checkpoint_path, args.device, args.weights)
+
+    if args.no_early_stop:
+        try:
+            from d4rl.kitchen.kitchen_envs import (
+                KitchenMicrowaveKettleLightSliderV0,
+                KitchenMicrowaveKettleBottomBurnerLightV0,
+            )
+            KitchenMicrowaveKettleLightSliderV0.TERMINATE_ON_TASK_COMPLETE = False
+            KitchenMicrowaveKettleBottomBurnerLightV0.TERMINATE_ON_TASK_COMPLETE = False
+        except Exception as e:
+            print(f"[WARN] Could not patch TERMINATE_ON_TASK_COMPLETE: {e}")
 
     env = gym.make(env_name)
     env.seed(args.seed)
@@ -296,7 +313,7 @@ def main():
     with imageio.get_writer(out_path, format="FFMPEG", fps=args.fps, codec=args.codec) as writer:
         writer.append_data(render_frame(env, args.width, args.height, args.camera))
 
-        while not done and env_steps < max_steps:
+        while env_steps < max_steps and (args.no_early_stop or not done):
             cond_np = np.stack(obs_history, axis=0)[None]
             cond = {"state": torch.from_numpy(cond_np).float().to(args.device)}
 
@@ -314,7 +331,9 @@ def main():
                 obs_history.append(norm_obs)
                 writer.append_data(render_frame(env, args.width, args.height, args.camera))
 
-                if done or env_steps >= max_steps:
+                if env_steps >= max_steps:
+                    break
+                if done and not args.no_early_stop:
                     break
 
     env.close()

@@ -22,12 +22,12 @@ horizon_steps: 4
 act_steps: 4
 
 env:
-  n_envs: 40
+  n_envs: 10
   name: ${env_name}
-  max_episode_steps: 280
+  max_episode_steps: 350
   reset_at_iteration: False
   save_video: False
-  best_reward_threshold_for_success: 4
+  best_reward_threshold_for_success: 6
   wrappers:
     mujoco_locomotion_lowdim:
       normalization_path: ${normalization_path}
@@ -43,23 +43,23 @@ wandb:
   run: ${now:%H-%M-%S}_${name}
 
 train:
-  n_train_itr: 301
+  n_train_itr: 700
   n_critic_warmup_itr: 0
-  n_steps: 70
-  gamma: 0.99
-  actor_lr: 1e-4
+  n_steps: 100
+  gamma: 0.98
+  actor_lr: 5e-4
   actor_weight_decay: 0
   actor_lr_scheduler:
     first_cycle_steps: 1000
     warmup_steps: 10
-    min_lr: 1e-4
-  critic_lr: 1e-3
+    min_lr: 5e-4
+  critic_lr: 1e-2
   critic_weight_decay: 0
   critic_lr_scheduler:
     first_cycle_steps: 1000
     warmup_steps: 10
-    min_lr: 1e-3
-  save_model_freq: 100
+    min_lr: 1e-2
+  save_model_freq: 15
   val_freq: 10
   render:
     freq: 1
@@ -67,7 +67,7 @@ train:
   # PPO specific
   reward_scale_running: True
   reward_scale_const: 1.0
-  gae_lambda: 0.95
+  gae_lambda: 0.96
   batch_size: 5600
   update_epochs: 10
   vf_coef: 0.5
