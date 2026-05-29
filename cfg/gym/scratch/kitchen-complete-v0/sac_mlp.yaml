@@ -3,12 +3,16 @@ defaults:
 hydra:
   run:
     dir: ${logdir}
-_target_: agent.finetune.train_rlpd_agent.TrainRLPDAgent
+_target_: agent.finetune.train_sac_agent.TrainSACAgent
 
-name: ${env_name}_rlpd_mlp_ta${horizon_steps}
+# Pure online SAC from random init: no pretrained policy and no offline demo
+# data. Reward (the kitchen task-completion bonus, restricted via DPPO_KITCHEN_TASKS)
+# is the *only* signal shaping behavior, so the policy can only learn the tasks
+# you select. Sparse rewards make exploration hard from scratch -- pair with
+# reward shaping if it stalls.
+name: ${env_name}_sac_mlp_ta${horizon_steps}
 logdir: ${oc.env:DPPO_LOG_DIR}/gym-finetune/${name}/${now:%Y-%m-%d}_${now:%H-%M-%S}_${seed}
 normalization_path: ${oc.env:DPPO_DATA_DIR}/gym/${env_name}/normalization.npz
-offline_dataset_path: ${oc.env:DPPO_DATA_DIR}/gym/${env_name}/train.npz
 
 seed: 42
 device: cuda:0
@@ -20,7 +24,7 @@ horizon_steps: 1
 act_steps: 1
 
 env:
-  n_envs: 1
+  n_envs: 10
   name: ${env_name}
   max_episode_steps: 280
   reset_at_iteration: False
@@ -28,9 +32,8 @@ env:
   best_reward_threshold_for_success: 4
   wrappers:
     # Innermost wrapper (wraps the raw d4rl env before normalization): adds a
-    # dense -||joint - goal|| reward toward the selected --tasks appliances.
-    # NOTE: only shapes the *online* env rollouts; RLPD's offline samples keep
-    # the demo dataset's original (sparse) rewards.
+    # dense -||joint - goal|| reward toward the selected --tasks appliances so
+    # from-scratch RL gets a signal instead of the all-zero sparse reward.
     # task_elements: null -> read DPPO_KITCHEN_TASKS (set by run_scratch.py).
     kitchen_dense_reward:
       task_elements: null
@@ -57,7 +60,7 @@ env:
 
 wandb:
   entity: ${oc.env:DPPO_WANDB_ENTITY}
-  project: rlpd-${env_name}
+  project: sac-gym-${env_name}
   run: ${now:%H-%M-%S}_${name}
 
 train:
@@ -65,45 +68,34 @@ train:
   n_steps: 1
   gamma: 0.99
   actor_lr: 3e-4
-  actor_weight_decay: 0
-  actor_lr_scheduler:
-    first_cycle_steps: 1000
-    warmup_steps: 10
-    min_lr: 3e-4
   critic_lr: 1e-3
-  critic_weight_decay: 0
-  critic_lr_scheduler:
-    first_cycle_steps: 1000
-    warmup_steps: 10
-    min_lr: 1e-3
-  save_model_freq: 50000
-  val_freq: 5000
+  save_model_freq: 100000
+  val_freq: 10000
   render:
     freq: 1
     num: 0
   log_freq: 200
-  # RLPD specific
+  # SAC specific
   batch_size: 256
-  target_ema_rate: 0.01
+  target_ema_rate: 0.005
   scale_reward_factor: 1
-  critic_num_update: 10
-  buffer_size: 400000
-  n_eval_episode: 40
-  n_explore_steps: 0
+  critic_replay_ratio: 256
+  actor_replay_ratio: 128
+  buffer_size: 1000000
+  n_eval_episode: 10
+  n_explore_steps: 5000
   target_entropy: ${eval:'- ${action_dim} * ${act_steps}'}
   init_temperature: 1
   # --- Stability: prevent the entropy-temperature / value runaway that
-  # otherwise overflows the loss and crashes (same failure mode as pure SAC).
+  # otherwise overflows the loss and crashes from-scratch SAC on sparse reward.
   grad_clip_norm: 1.0   # clip global grad-norm (actor/critic/alpha); null disables
   alpha_lr: 1e-4        # dedicated, lower lr for the entropy temperature
   max_alpha: 10.0       # cap on entropy temperature to break the feedback loop
 
 model:
-  _target_: model.rl.gaussian_rlpd.RLPD_Gaussian
+  _target_: model.rl.gaussian_sac.SAC_Gaussian
   randn_clip_value: 10
   tanh_output: True # squash after sampling
-  backup_entropy: True
-  n_critics: 5 # Ensemble size for critic models
   actor:
     _target_: model.common.mlp_gaussian.Gaussian_MLP
     mlp_dims: [256, 256, 256]
@@ -119,16 +111,8 @@ model:
     mlp_dims: [256, 256, 256]
     activation_type: ReLU
     use_layernorm: True
-    double_q: False # use ensemble
     cond_dim: ${eval:'${obs_dim} * ${cond_steps}'}
     action_dim: ${action_dim}
     action_steps: ${act_steps}
   horizon_steps: ${horizon_steps}
-  device: ${device}
-
-offline_dataset:
-  _target_: agent.dataset.sequence.StitchedSequenceQLearningDataset
-  dataset_path: ${offline_dataset_path}
-  horizon_steps: ${horizon_steps}
-  cond_steps: ${cond_steps}
   device: ${device}

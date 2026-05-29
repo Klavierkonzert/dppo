@@ -14,6 +14,7 @@ class MujocoLocomotionLowdimWrapper(gym.Env):
         self,
         env,
         normalization_path,
+        clip_obs=None,
     ):
         self.env = env
 
@@ -24,6 +25,16 @@ class MujocoLocomotionLowdimWrapper(gym.Env):
         self.obs_max = normalization["obs_max"]
         self.action_min = normalization["action_min"]
         self.action_max = normalization["action_max"]
+
+        # Optional symmetric clip applied to the *normalized* observation.
+        # Min-max normalization divides by (obs_max - obs_min + 1e-6); for obs
+        # dims that are ~constant in the demo data (range ~0, e.g. the kitchen
+        # goal block) any out-of-distribution deviation blows the normalized
+        # value up to millions. From-scratch RL routinely visits such states,
+        # which explodes the policy input -> saturates the tanh -> diverges.
+        # Clipping bounds the input without touching in-distribution values
+        # (which lie within ~[-1, 1]). Default None preserves prior behavior.
+        self.clip_obs = clip_obs
 
         self.observation_space = spaces.Dict()
         obs_example = self.env.reset()
@@ -55,7 +66,10 @@ class MujocoLocomotionLowdimWrapper(gym.Env):
         return {"state": obs}
 
     def normalize_obs(self, obs):
-        return 2 * ((obs - self.obs_min) / (self.obs_max - self.obs_min + 1e-6) - 0.5)
+        obs = 2 * ((obs - self.obs_min) / (self.obs_max - self.obs_min + 1e-6) - 0.5)
+        if self.clip_obs is not None:
+            obs = np.clip(obs, -self.clip_obs, self.clip_obs)
+        return obs
 
     def unnormalize_action(self, action):
         action = (action + 1) / 2  # [-1, 1] -> [0, 1]

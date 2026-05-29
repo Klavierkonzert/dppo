@@ -5,6 +5,7 @@ Launcher for all experiments. Download pre-training data, normalization statisti
 
 import os
 import sys
+import json
 import pretty_errors
 import logging
 
@@ -17,9 +18,75 @@ from download_url import (
     get_normalization_download_url,
     get_checkpoint_download_url,
 )
-from d4rl.kitchen.kitchen_envs import KitchenMicrowaveKettleLightSliderV0
-KitchenMicrowaveKettleLightSliderV0.TASK_ELEMENTS = ['microwave', 'kettle', 'light switch', 'slide cabinet', 'bottom burner', 'top burner',]
-KitchenMicrowaveKettleLightSliderV0.TERMINATE_ON_TASK_COMPLETE = False
+from d4rl.kitchen.kitchen_envs import (
+    OBS_ELEMENT_INDICES,
+    KitchenMicrowaveKettleLightSliderV0,
+    KitchenMicrowaveKettleBottomBurnerLightV0,
+)
+
+# Default Franka-Kitchen task set when none is requested. Matches the original
+# 6-element experiment so existing launch commands behave identically.
+DEFAULT_KITCHEN_TASKS = [
+    "microwave",
+    "kettle",
+    "light switch",
+    "slide cabinet",
+    "bottom burner",
+    "top burner",
+]
+
+
+def configure_kitchen_tasks(cfg):
+    """Choose which kitchen appliances count toward reward/success.
+
+    Resolution order: ``DPPO_KITCHEN_TASKS`` env var (JSON list, set by
+    ``run_pretrained.py``) > ``cfg.kitchen_task_elements`` > the 6-element
+    default. The success threshold is kept in sync (one point per appliance).
+    No-op for non-kitchen envs.
+    """
+    env_name = cfg.get("env_name") or cfg.get("env")
+    if env_name is None or "kitchen" not in str(env_name):
+        return
+
+    raw = os.environ.get("DPPO_KITCHEN_TASKS")
+    if raw:
+        tasks = json.loads(raw)
+        explicit = True
+    elif cfg.get("kitchen_task_elements"):
+        tasks = list(cfg.kitchen_task_elements)
+        explicit = True
+    else:
+        tasks = list(DEFAULT_KITCHEN_TASKS)
+        explicit = False
+
+    unknown = [t for t in tasks if t not in OBS_ELEMENT_INDICES]
+    if unknown:
+        raise ValueError(
+            f"Unknown kitchen task element(s) {unknown}. "
+            f"Valid elements: {sorted(OBS_ELEMENT_INDICES)}"
+        )
+
+    terminate = os.environ.get("DPPO_KITCHEN_TERMINATE_ON_COMPLETE", "0") == "1"
+    for kitchen_cls in (
+        KitchenMicrowaveKettleLightSliderV0,
+        KitchenMicrowaveKettleBottomBurnerLightV0,
+    ):
+        kitchen_cls.TASK_ELEMENTS = list(tasks)
+        kitchen_cls.TERMINATE_ON_TASK_COMPLETE = terminate
+
+    # Each completed appliance yields +1 reward, so completing all == len(tasks).
+    if explicit and "env" in cfg and "best_reward_threshold_for_success" in cfg.env:
+        cfg.env.best_reward_threshold_for_success = len(tasks)
+
+    threshold = (
+        cfg.env.best_reward_threshold_for_success
+        if "env" in cfg and "best_reward_threshold_for_success" in cfg.env
+        else "n/a"
+    )
+    log.info(
+        f"Kitchen tasks: {tasks} "
+        f"(terminate_on_complete={terminate}, success_threshold={threshold})"
+    )
 
 # allows arbitrary python code execution in configs using the ${eval:''} resolver
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -46,6 +113,9 @@ sys.stderr = open(sys.stderr.fileno(), mode="w", buffering=1)
 def main(cfg: OmegaConf):
     # resolve immediately so all the ${now:} resolvers will use the same time.
     OmegaConf.resolve(cfg)
+
+    # set kitchen task elements before the (forked) env workers are created
+    configure_kitchen_tasks(cfg)
 
     print("DEBUG: CFG OBS DIM:", cfg.obs_dim)
 
