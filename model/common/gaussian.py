@@ -3,8 +3,10 @@ Gaussian policy parameterization.
 
 """
 
+import math
 import torch
 import torch.distributions as D
+import torch.nn.functional as F
 import logging
 
 log = logging.getLogger(__name__)
@@ -111,8 +113,11 @@ class GaussianModel(torch.nn.Module):
 
             # For SAC/RLPD, squash mean after sampling here instead of right after model output as in PPO
             if self.tanh_output:
+                pre_tanh = sampled_action
+                log_prob -= 2 * (
+                    math.log(2.0) - pre_tanh - F.softplus(-2.0 * pre_tanh)
+                )
                 sampled_action = torch.tanh(sampled_action)
-                log_prob -= torch.log(1 - sampled_action.pow(2) + 1e-6)
             return sampled_action.view(B, T, -1), log_prob.sum(1, keepdim=False)
         else:
             if self.tanh_output:

@@ -27,8 +27,28 @@ env:
   save_video: False
   best_reward_threshold_for_success: 4
   wrappers:
+    # Innermost wrapper (wraps the raw d4rl env before normalization): adds a
+    # dense -||joint - goal|| reward toward the selected --tasks appliances.
+    # NOTE: only shapes the *online* env rollouts; RLPD's offline samples keep
+    # the demo dataset's original (sparse) rewards.
+    # task_elements: null -> read DPPO_KITCHEN_TASKS (set by run_scratch.py).
+    kitchen_dense_reward:
+      task_elements: null
+      dense_reward_scale: 1.0
+      # Cartesian -||end_effector - appliance_site|| term. The object-distance
+      # term alone gives no gradient until the arm already touches the
+      # appliance, so from-scratch exploration stalls; this pulls the arm to the
+      # appliance first. 0.0 disables it.
+      reach_reward_scale: 1.0
+      potential_based: False
+      gamma: ${train.gamma}
     mujoco_locomotion_lowdim:
       normalization_path: ${normalization_path}
+      # Clip the normalized obs: ~38 kitchen obs dims are near-constant in the
+      # demo data (range ~0), so OOD states reached by from-scratch exploration
+      # otherwise normalize to ~1e6 and blow up the policy input. In-distribution
+      # values lie within ~[-1, 1], so this only bounds OOD blow-ups.
+      clip_obs: 10.0
     multi_step:
       n_obs_steps: ${cond_steps}
       n_action_steps: ${act_steps}
@@ -72,6 +92,11 @@ train:
   n_explore_steps: 0
   target_entropy: ${eval:'- ${action_dim} * ${act_steps}'}
   init_temperature: 1
+  # --- Stability: prevent the entropy-temperature / value runaway that
+  # otherwise overflows the loss and crashes (same failure mode as pure SAC).
+  grad_clip_norm: 1.0   # clip global grad-norm (actor/critic/alpha); null disables
+  alpha_lr: 1e-4        # dedicated, lower lr for the entropy temperature
+  max_alpha: 10.0       # cap on entropy temperature to break the feedback loop
 
 model:
   _target_: model.rl.gaussian_rlpd.RLPD_Gaussian

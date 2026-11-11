@@ -22,7 +22,7 @@ horizon_steps: 4
 act_steps: 4
 
 env:
-  n_envs: 40
+  n_envs: 10
   name: ${env_name}
   max_episode_steps: 280
   reset_at_iteration: False

@@ -84,8 +84,12 @@ class TrainRLPDAgent(TrainAgent):
         self.target_entropy = cfg.train.target_entropy
         self.log_alpha_optimizer = torch.optim.Adam(
             [self.log_alpha],
-            lr=cfg.train.critic_lr,
+            lr=cfg.train.get("alpha_lr", cfg.train.critic_lr),
         )
+
+        self.grad_clip_norm = cfg.train.get("grad_clip_norm", None)
+        max_alpha = cfg.train.get("max_alpha", None)
+        self.max_log_alpha = float(np.log(max_alpha)) if max_alpha else None
 
     def run(self):
         # make a FIFO replay buffer for obs, action, and reward
@@ -322,6 +326,10 @@ class TrainRLPDAgent(TrainAgent):
                     )
                     self.critic_optimizer.zero_grad()
                     loss_critic.backward()
+                    if self.grad_clip_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.ensemble_params.values(), self.grad_clip_norm
+                        )
                     self.critic_optimizer.step()
 
                     # Update target critic every critic update
@@ -334,6 +342,10 @@ class TrainRLPDAgent(TrainAgent):
                 )
                 self.actor_optimizer.zero_grad()
                 loss_actor.backward()
+                if self.grad_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.network.parameters(), self.grad_clip_norm
+                    )
                 self.actor_optimizer.step()
 
                 # Update temperature parameter
@@ -344,7 +356,12 @@ class TrainRLPDAgent(TrainAgent):
                     self.target_entropy,
                 )
                 loss_alpha.backward()
+                if self.grad_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_([self.log_alpha], self.grad_clip_norm)
                 self.log_alpha_optimizer.step()
+                if self.max_log_alpha is not None:
+                    with torch.no_grad():
+                        self.log_alpha.clamp_(max=self.max_log_alpha)
 
             # Update lr
             self.actor_lr_scheduler.step()

@@ -64,8 +64,12 @@ class TrainSACAgent(TrainAgent):
         self.target_entropy = cfg.train.target_entropy
         self.log_alpha_optimizer = torch.optim.Adam(
             [self.log_alpha],
-            lr=cfg.train.critic_lr,
+            lr=cfg.train.get("alpha_lr", cfg.train.critic_lr),
         )
+
+        self.grad_clip_norm = cfg.train.get("grad_clip_norm", None)
+        max_alpha = cfg.train.get("max_alpha", None)
+        self.max_log_alpha = float(np.log(max_alpha)) if max_alpha else None
 
     def run(self):
         # make a FIFO replay buffer for obs, action, and reward
@@ -74,6 +78,7 @@ class TrainSACAgent(TrainAgent):
         action_buffer = deque(maxlen=self.buffer_size)
         reward_buffer = deque(maxlen=self.buffer_size)
         terminated_buffer = deque(maxlen=self.buffer_size)
+        reward_window = deque(maxlen=10000)
 
         # Start training loop
         timer = Timer()
@@ -104,14 +109,14 @@ class TrainSACAgent(TrainAgent):
             self.model.eval() if eval_mode else self.model.train()
 
             # Reset env before iteration starts (1) if specified, (2) at eval mode, or (3) at the beginning
-            firsts_trajs = np.zeros((self.n_steps + 1, self.n_envs))
+            firsts_trajs = np.zeros((n_steps + 1, self.n_envs))
             if self.reset_at_iteration or eval_mode or self.itr == 0:
                 prev_obs_venv = self.reset_env_all(options_venv=options_venv)
                 firsts_trajs[0] = 1
             else:
                 # if done at the end of last iteration, the envs are just reset
                 firsts_trajs[0] = done_venv
-            reward_trajs = np.zeros((self.n_steps, self.n_envs))
+            reward_trajs = np.zeros((n_steps, self.n_envs))
 
             # Collect a set of trajectories from env
             cnt_episode = 0
@@ -158,6 +163,7 @@ class TrainSACAgent(TrainAgent):
                         (reward_venv * self.scale_reward_factor).tolist()
                     )
                     terminated_buffer.extend(terminated_venv.tolist())
+                    reward_window.extend(np.asarray(reward_venv).reshape(-1).tolist())
 
                 # update for next step
                 prev_obs_venv = obs_venv
@@ -252,6 +258,10 @@ class TrainSACAgent(TrainAgent):
                 )
                 self.critic_optimizer.zero_grad()
                 loss_critic.backward()
+                if self.grad_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.critic.parameters(), self.grad_clip_norm
+                    )
                 self.critic_optimizer.step()
 
                 # Update target critic every critic update
@@ -267,6 +277,10 @@ class TrainSACAgent(TrainAgent):
                         )
                         self.actor_optimizer.zero_grad()
                         loss_actor.backward()
+                        if self.grad_clip_norm is not None:
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.network.parameters(), self.grad_clip_norm
+                            )
                         self.actor_optimizer.step()
 
                         # Update temperature parameter
@@ -277,7 +291,15 @@ class TrainSACAgent(TrainAgent):
                             self.target_entropy,
                         )
                         loss_alpha.backward()
+                        if self.grad_clip_norm is not None:
+                            torch.nn.utils.clip_grad_norm_(
+                                [self.log_alpha], self.grad_clip_norm
+                            )
                         self.log_alpha_optimizer.step()
+                        # Keep the entropy temperature bounded.
+                        if self.max_log_alpha is not None:
+                            with torch.no_grad():
+                                self.log_alpha.clamp_(max=self.max_log_alpha)
 
             # Save model
             if self.itr % self.save_model_freq == 0 or self.itr == self.n_train_itr - 1:
@@ -311,14 +333,32 @@ class TrainSACAgent(TrainAgent):
                     run_results[-1]["eval_episode_reward"] = avg_episode_reward
                     run_results[-1]["eval_best_reward"] = avg_best_reward
                 else:
+                    avg_step_reward = (
+                        float(np.mean(reward_window)) if len(reward_window) else 0.0
+                    )
+                    mean_logprob = float("nan")
+                    mean_q = float("nan")
+                    if "obs_b" in dir():
+                        with torch.no_grad():
+                            diag_action, diag_logprob = self.model.forward(
+                                {"state": obs_b},
+                                deterministic=False,
+                                get_logprob=True,
+                            )
+                            dq1, dq2 = self.model.critic({"state": obs_b}, diag_action)
+                            mean_logprob = diag_logprob.mean().item()
+                            mean_q = torch.min(dq1, dq2).mean().item()
                     log.info(
-                        f"{self.itr}: step {cnt_train_step:8d} | loss actor {loss_actor:8.4f} | loss critic {loss_critic:8.4f} | reward {avg_episode_reward:8.4f} | alpha {alpha:8.4f} | t {time:8.4f}"
+                        f"{self.itr}: step {cnt_train_step:8d} | loss actor {loss_actor:8.4f} | loss critic {loss_critic:8.4f} | step_rew {avg_step_reward:8.4f} | logprob {mean_logprob:8.3f} | Q {mean_q:9.3f} | alpha {alpha:8.4f} | t {time:8.4f}"
                     )
                     if self.use_wandb:
                         wandb_log_dict = {
                             "total env step": cnt_train_step,
                             "loss - critic": loss_critic,
                             "entropy coeff": alpha,
+                            "avg step reward - train": avg_step_reward,
+                            "mean logprob - train": mean_logprob,
+                            "mean Q - train": mean_q,
                             "avg episode reward - train": avg_episode_reward,
                             "num episode - train": num_episode_finished,
                         }
